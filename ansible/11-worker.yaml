@@ -1,0 +1,246 @@
+---
+# Плейбук установки Kubernetes на worker-ноды
+- name: Install and configure Kubernetes worker nodes
+  hosts: workers
+  become: true
+  gather_facts: true
+
+  vars:
+    kubernetes_version: "1.35"
+    containerd_version: "1.7"
+    cri_socket: "unix:///var/run/containerd/containerd.sock"
+
+  pre_tasks:
+    # Получение внутреннего IP мастер-ноды из inventory
+    # - name: Set master private IP from inventory
+    #   ansible.builtin.set_fact:
+    #     master_private_ip: "{{ hostvars['k8s-master']['master_private_ip'] }}"
+    #   run_once: true
+
+    # # Проверка и установка шлюза по умолчанию на мастер-ноду
+    # - name: Check current default gateway
+    #   ansible.builtin.command: ip route show default
+    #   register: current_gateway
+    #   changed_when: false
+    #   failed_when: false
+
+    # - name: Show current default gateway
+    #   ansible.builtin.debug:
+    #     msg: |
+    #       Current default gateway on {{ inventory_hostname }}:
+    #       {{ current_gateway.stdout | default('No default gateway configured') }}
+
+    # - name: Set default gateway to master node
+    #   ansible.builtin.command: ip route replace default via {{ master_private_ip }}
+    #   when:
+    #     - master_private_ip | default('') != ''
+    #     - master_private_ip not in current_gateway.stdout | default('')
+
+    # # Сохранение маршрута в netplan для персистентности после перезагрузки
+    # - name: Ensure netplan config directory exists
+    #   ansible.builtin.file:
+    #     path: /etc/netplan
+    #     state: directory
+    #     mode: '0755'
+
+    # - name: Find netplan config file
+    #   ansible.builtin.find:
+    #     paths: /etc/netplan
+    #     patterns: '*.yaml'
+    #   register: netplan_files
+    #   changed_when: false
+
+    # - name: Add default gateway route to netplan config
+    #   ansible.builtin.lineinfile:
+    #     path: "{{ netplan_files.files[0].path }}"
+    #     regexp: '^\s+gateway4:.*'
+    #     line: '      gateway4: {{ master_private_ip }}'
+    #   when:
+    #     - netplan_files.files | length > 0
+    #     - master_private_ip | default('') != ''
+
+
+
+    # Обновление кэша apt и пакетов
+    - name: Update apt cache and upgrade packages
+      apt:
+        update_cache: true
+        # upgrade: dist
+        # cache_valid_time: 3600
+
+    # Установка необходимых пакетов
+    - name: Install required packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - unattended-upgrades
+          - python3-pip
+          - software-properties-common
+        state: present
+
+    # Отключение swap
+    - name: Disable swap immediately
+      command: swapoff -a
+      changed_when: false
+
+    - name: Remove swap from fstab
+      lineinfile:
+        path: /etc/fstab
+        regexp: '.*swap.*'
+        state: absent
+        backup: yes
+
+    # Загрузка необходимых модулей ядра
+    - name: Load kernel modules (overlay, br_netfilter)
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - overlay
+        - br_netfilter
+
+    # Настройка sysctl параметров
+    - name: Configure sysctl parameters for Kubernetes
+      copy:
+        content: |
+          net.bridge.bridge-nf-call-iptables  = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward                 = 1
+        dest: /etc/sysctl.d/k8s.conf
+        mode: '0644'
+
+    - name: Apply sysctl parameters
+      command: sysctl --system
+      changed_when: false
+
+
+
+  tasks:
+    - name: Create keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Kubernetes GPG key
+      ansible.builtin.apt_key:
+        url: https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key
+        state: present
+
+    - name: Add Kubernetes repository
+      ansible.builtin.apt_repository:
+        repo: "deb https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/ /"
+        state: present
+        update_cache: yes
+
+    - name: Force regather facts
+      setup:
+
+    # # Добавление репозитория Kubernetes
+    # - name: Add Kubernetes apt key
+    #   apt_key:
+    #     url: https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key
+    #     state: present
+
+    # - name: Add Kubernetes repository
+    #   apt_repository:
+    #     repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/ /"
+    #     state: present
+    #     filename: kubernetes
+
+    - name: Add Docker GPG key
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+        update_cache: no  
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+
+    # Установка containerd
+    - name: Install containerd
+      ansible.builtin.apt:
+        name: containerd
+        state: present
+
+    # Настройка containerd
+    - name: Create containerd config directory
+      file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+
+    - name: Generate containerd default configuration
+      ansible.builtin.shell:
+        cmd: containerd config default > /etc/containerd/config.toml
+        creates: /etc/containerd/config.toml
+
+    # - name: Generate containerd default config
+    #   command: containerd config default
+    #   args:
+    #     creates: /etc/containerd/config.toml
+    #   register: containerd_config
+
+    - name: Configure containerd to use systemd cgroup driver
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+      notify: Restart containerd
+
+    # Установка kubelet, kubeadm, kubectl
+    - name: Install kubelet, kubeadm, kubectl
+      ansible.builtin.apt:
+        name:
+          - kubelet={{ kubernetes_version }}.*
+          - kubeadm={{ kubernetes_version }}.*
+          - kubectl={{ kubernetes_version }}.*
+        state: present
+        force: yes
+
+    - name: Hold Kubernetes packages at current version
+      ansible.builtin.apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: fixed
+
+    # Включение сервисов
+    - name: Enable containerd service
+      service:
+        name: containerd
+        enabled: yes
+
+    - name: Enable kubelet service
+      service:
+        name: kubelet
+        enabled: yes
+
+  handlers:
+    - name: Restart containerd
+      service:
+        name: containerd
+        state: restarted
+
+  post_tasks:
+    - name: Verify containerd is running
+      command: systemctl is-active containerd
+      register: containerd_status
+      changed_when: false
+      failed_when: false
+
+    - name: Show containerd status
+      debug:
+        msg: "containerd status: {{ containerd_status.stdout }}"

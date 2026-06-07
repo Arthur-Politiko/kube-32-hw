@@ -1,0 +1,35 @@
+#cloud-config
+
+# Option 1 - Full installation using cURL
+package_update: true
+package_upgrade: true
+
+# groups:
+#   - docker
+
+system_info:
+  default_user:
+    name: ubuntu
+    groups: [ k8s ]
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+
+packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - unattended-upgrades
+  - python3
+  - python3-pip
+
+# users:
+#   - name: ansible_user
+#     # shell: /bin/bash
+#     # ssh_authorized_keys:
+#     #   - ${ssh_public_key}
+#     sudo: [ALL=(ALL) NOPASSWD:ALL]
+
+
+final_message: "The system is finally up, after $UPTIME seconds"
