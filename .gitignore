@@ -1,5 +1,5 @@
 # Ignore specific files and directories
-get_helm.sh
+
 
 # OS generated files
 .DS_Store

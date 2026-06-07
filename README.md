@@ -92,19 +92,6 @@ terraform apply -replace='yandex_compute_instance.vms["k8s-master"]' --auto-appr
 
 В качестве способа установки Kubernetes выбран Ansible. Это позволяет гибко управлять процессом установки, обеспечивает идемпотентность и упрощает отладку.
 
-### Структура Ansible проекта
-
-```
-ansible/
-├── ansible.cfg        # Конфигурация Ansible
-├── bootstrap.yml      # Установка Python 3.9 (только для master)
-├── inventory.ini      # Генерируется Terraform
-├── main.yaml          # Установка Kubernetes + containerd на master
-├── worker.yaml        # Установка Kubernetes + containerd на workers
-├── kubeadm-init.yaml  # Инициализация кластера на master
-├── kubeadm-join.yaml  # Присоединение workers к кластеру
-└── install-k8s.yaml   # Головной playbook (оркестрация всех этапов)
-```
 
 ### Подготовка инфраструктуры
 
@@ -149,67 +136,27 @@ ansible-playbook install-k8s.yaml
 
 Плейбук выполнит следующие этапы:
 
-1. **bootstrap.yml** — установка Python 3.9 на master (необходим для Ansible)
-2. **main.yaml** — установка Kubernetes (containerd, kubelet, kubeadm, kubectl) на master:
+1. **01-bootstrap.yml** — установка необходимых пакетов для начальной работы
+2. **10-master.yaml** — установка Kubernetes (containerd, kubelet, kubeadm, kubectl) на master:
    - Обновление пакетов
    - Отключение swap
    - Настройка ядра (modprobe overlay, br_netfilter)
    - Настройка sysctl параметров
    - Установка containerd с настройкой SystemdCgroup=true
    - Установка kubelet, kubeadm, kubectl
-3. **worker.yaml** — установка Kubernetes на worker-ноды
-4. **kubeadm-init.yaml** — инициализация кластера:
+3. **11-worker.yaml** — установка Kubernetes на worker-ноды
+4. **20-kubeadm-init.yaml** — инициализация кластера:
    - `kubeadm init` с параметрами:
-     - Kubernetes 1.32.0
+     - Kubernetes 1.35.0
      - Pod CIDR: 10.244.0.0/16
      - Service CIDR: 10.96.0.0/12
    - Настройка kubeconfig для пользователя ubuntu
    - Установка Flannel CNI-плагина
    - Ожидание готовности master-ноды
-5. **kubeadm-join.yaml** — присоединение worker-нод к кластеру
+5. **21-kubeadm-join.yaml** — присоединение worker-нод к кластеру
 
 
-
-Запуск kubeadm init
-   - Создание сертификатов CA
-   - Создание сертификатов etcd (или external etcd)
-   - Генерация kubeconfig файлов для компонентов
-   - Запуск control plane компонентов как static pods:
-     * kube-apiserver
-     * kube-controller-manager
-     * kube-scheduler
-     * etcd (если не external)
-   - Создание bootstrap токена   
-
-Настройка kubectl
-   - mkdir -p $HOME/.kube
-   - cp /etc/kubernetes/admin.conf $HOME/.kube/config
-   - Настройка для пользователя ubuntu (опционально)
-
-
-
-Только на master ноде:
-
-Установка сетевого плагина
-   - Flannel: kubectl apply -f kube-flannel.yml
-   - Calico: kubectl apply -f calico.yaml
-   - Weave, Cilium, и т.д.
-
-Ожидание готовности core pods
-    - kube-system namespace pods должны запуститься
-    - CNI должен инициализироваться (может занять 1-2 минуты)
-
-
-Присоединение worker нод
-На master ноде:
-Генерация join token
-    - kubeadm token create --print-join-command
-    - Сохранить команду для воркеров    
-
-На каждой worker ноде:
-Выполнение join команды
-    - kubeadm join <master-ip>:6443 --token <token> --discovery-token-ca-cert-hash <hash>
-    - Безопасное получение CA cert hash
+![answer](./img/32-01-01.png)
 
 
 ### Проверка и верификация
@@ -228,40 +175,13 @@ kubectl get nodes
 kubectl get pods -A
 ```
 
-Пример вывода:
-```
-NAME             STATUS   ROLES           AGE   VERSION
-k8s-master       Ready    control-plane   5m    v1.32.0
-k8s-worker-01    Ready    <none>          3m    v1.32.0
-k8s-worker-02    Ready    <none>          3m    v1.32.0
-k8s-worker-03    Ready    <none>          3m    v1.32.0
-k8s-worker-04    Ready    <none>          3m    v1.32.0
-k8s-worker-05    Ready    <none>          3m    v1.32.0
-```
+![answer](./img/32-01-02.png)
 
-### Структура проекта
 
-```
-kube-32-hw/
-├── ansible/           # Ansible конфигурация
-│   ├── ansible.cfg
-│   ├── bootstrap.yml
-│   ├── inventory.ini
-│   ├── main.yaml
-│   ├── worker.yaml
-│   ├── kubeadm-init.yaml
-│   ├── kubeadm-join.yaml
-│   └── install-k8s.yaml
-├── tf/                # Terraform конфигурация
-│   ├── 00-providers.tf
-│   ├── 01-variables.tf
-│   ├── 02-network.tf
-│   ├── 10-instance.tf
-│   ├── 90-output.tf
-│   ├── deploy/        # Cloud-init скрипты
-│   └── templates/     # Шаблоны
-└── vault/             # Конфиденциальные данные
-    ├── cloud-sa-key.json
-    ├── id_ed25519
-    └── id_ed25519.pub
-```
+
+### Что не так
+
+1. Большое количество констант в terraform
+2. Большое количество констант в ansible
+3. Отсутствие jumphost
+4. Не вынесены константы в переменные, отсюда слабая структура и расширяемость
